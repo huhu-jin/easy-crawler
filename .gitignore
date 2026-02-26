@@ -1,0 +1,10 @@
+# 添加数据目录到 .gitignore
+data/
+*.pyc
+__pycache__/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/

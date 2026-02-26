@@ -1,0 +1,12 @@
+[
+    {
+        "url": "https://www.bis.gov/news-updates",
+        "desc": "美国商务部网站1",
+        "list_selector": "#main-content ul",
+        "content_selector": "#main-content div.press-release-container"
+    },
+    {
+        "url": "https://www.bis.gov/news-updates",
+        "desc": "美国商务部网站2"
+    }
+]
