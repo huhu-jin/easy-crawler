@@ -26,3 +26,17 @@ firecrawl
 ```
 docker-compose up -d
 ```
+
+## 启动mcp服务
+
+env PORT=8080 HTTP_STREAMABLE_SERVER=true FIRECRAWL_API_URL=http://localhost:5002 npx -y firecrawl-mcp
+
+
+##dify 
+{
+    "mcpServers": {
+        "mcp-server-firecrawl": {
+            "serverUrl": "http://localhost:8080/mcp"
+        }
+    }
+}
