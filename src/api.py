@@ -19,16 +19,16 @@ def create_app(storage_service: StorageService) -> Flask:
     @app.route('/api/list', methods=['GET'])
     def list_files():
         """
-        获取指定日期的所有 Markdown 文件列表
-        
+        获取指定日期下所有 file_dir 的 Markdown 文件列表
+
         Query Parameters:
             date: 日期，格式 YYYY-MM-DD，默认为今天
-        
+
         Returns:
-            JSON: {"date": "YYYY-MM-DD", "files": ["file1.md", "file2.md"]}
+            JSON 数组，每项：{"date": "YYYY-MM-DD", "file_dir": "bis1", "count": 1, "files": [...]}
         """
         date_str = request.args.get('date')
-        
+
         # 解析日期
         if date_str:
             try:
@@ -39,15 +39,22 @@ def create_app(storage_service: StorageService) -> Flask:
                 }), 400
         else:
             date = datetime.now()
-        
-        # 获取文件列表
-        files = storage_service.get_files_by_date(date)
-        
-        return jsonify({
-            'date': date.strftime('%Y-%m-%d'),
-            'count': len(files),
-            'files': files
-        })
+
+        # 按 file_dir 分组获取文件列表
+        grouped = storage_service.get_files_grouped_by_dir(date)
+        date_formatted = date.strftime('%Y-%m-%d')
+
+        result = [
+            {
+                'date': date_formatted,
+                'file_dir': item['file_dir'],
+                'count': len(item['files']),
+                'files': item['files']
+            }
+            for item in grouped
+        ]
+
+        return jsonify(result)
     
     @app.route('/api/content', methods=['GET'])
     def get_content():
@@ -57,12 +64,14 @@ def create_app(storage_service: StorageService) -> Flask:
         Query Parameters:
             date: 日期，格式 YYYY-MM-DD，默认为今天
             filename: 文件名
+            file_dir: 网站子目录名（来自 config.json 的 file_dir 字段）
         
         Returns:
-            JSON: {"date": "YYYY-MM-DD", "filename": "xxx.md", "content": "..."}
+            JSON: {"date": "YYYY-MM-DD", "file_dir": "bis1", "filename": "xxx.md", "content": "..."}
         """
         date_str = request.args.get('date')
         filename = request.args.get('filename')
+        file_dir = request.args.get('file_dir', '')
         
         if not filename:
             return jsonify({
@@ -81,7 +90,7 @@ def create_app(storage_service: StorageService) -> Flask:
             date = datetime.now()
         
         # 获取文件内容
-        content = storage_service.get_file_content(date, filename)
+        content = storage_service.get_file_content(date, filename, file_dir)
         
         if content is None:
             return jsonify({
@@ -90,6 +99,7 @@ def create_app(storage_service: StorageService) -> Flask:
         
         return jsonify({
             'date': date.strftime('%Y-%m-%d'),
+            'file_dir': file_dir,
             'filename': filename,
             'content': content
         })

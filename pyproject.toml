@@ -12,6 +12,7 @@ dependencies = [
     "apscheduler>=3.10.0",
     "requests>=2.31.0",
     "python-dateutil>=2.8.2",
+    "pymupdf4llm>=0.0.17",
 ]
 
 [project.optional-dependencies]

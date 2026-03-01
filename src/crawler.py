@@ -1,8 +1,14 @@
 """爬虫服务模块"""
 import re
+import tempfile
+import os
 from datetime import datetime
 import time
 from typing import List, Optional, Tuple
+from urllib.parse import urljoin
+import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from bs4 import BeautifulSoup
 import html2text
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -18,17 +24,18 @@ class CrawlerService:
         self.html_converter.ignore_images = False
         self.html_converter.body_width = 0  # 不自动换行
     
-    def is_today(self, date_text: str) -> bool:
+    def is_today(self, date_text: str, target_date=None) -> bool:
         """
-        判断日期文本是否为今天
+        判断日期文本是否匹配目标日期
         
         Args:
             date_text: 日期文本
+            target_date: 目标日期（date 对象），不传则使用今天
         
         Returns:
-            是否为今天
+            是否匹配
         """
-        today = datetime.now().date()
+        today = target_date if target_date is not None else datetime.now().date()
         
         # 英文月份名称映射
         month_names = {
@@ -61,24 +68,28 @@ class CrawlerService:
                 try:
                     year, month, day = parser(match)
                     date_obj = datetime(year, month, day).date()
-                    # return date_obj == today
-                    return True
+                    return date_obj == today
                 except (ValueError, KeyError):
                     continue
         
-        # 检查相对日期
-        if 'today' in date_text.lower() or '今天' in date_text or '今日' in date_text:
-            return True
+        # 检查相对日期（仅当 target_date 为今天时生效）
+        if today == datetime.now().date():
+            if 'today' in date_text.lower() or '今天' in date_text or '今日' in date_text:
+                return True
         
         return False
     
-    def extract_links_from_list(self, html_content: str, list_selector: str = None) -> List[Tuple[str, str]]:
+    def extract_links_from_list(self, html_content: str, list_selector: str = None,
+                                list_date_selector: str = None,
+                                target_date=None) -> List[Tuple[str, str]]:
         """
         从 HTML 中提取 ul > li 结构中的链接
         
         Args:
             html_content: HTML 内容
             list_selector: CSS 选择器，用于定位列表区域，默认为所有 ul
+            list_date_selector: CSS 选择器，用于在 li 内定位日期元素；不传则取整个 li 文本
+            target_date: 目标日期（date 对象），不传则使用今天
         
         Returns:
             (链接URL, 链接文本) 的列表
@@ -104,9 +115,14 @@ class CrawlerService:
             
             for ul in uls:
                 for li in ul.find_all('li'):
-                    # 检查 li 中是否包含今天的日期
-                    li_text = li.get_text()
-                    if not self.is_today(li_text):
+                    # 获取用于日期判断的文本
+                    if list_date_selector:
+                        date_el = li.select_one(list_date_selector)
+                        date_text = date_el.get_text() if date_el else ''
+                    else:
+                        date_text = li.get_text()
+
+                    if not self.is_today(date_text, target_date):
                         continue
                     
                     # 提取链接
@@ -198,62 +214,123 @@ class CrawlerService:
         
         return "未命名页面"
     
-    def check_and_crawl(self, url: str, desc: str, list_selector: str = None, content_selector: str = None) -> List[Tuple[str, str, str]]:
+    def download_and_convert_pdf(self, pdf_url: str) -> Optional[str]:
         """
-        检查 URL 并爬取今天更新的内容
-        
+        下载 PDF 并转换为 Markdown
+
+        Args:
+            pdf_url: PDF 文件的完整 URL
+
+        Returns:
+            Markdown 字符串，失败时返回 None
+        """
+        import pymupdf4llm
+
+        print(f"  正在下载 PDF: {pdf_url}")
+        try:
+            resp = requests.get(pdf_url, timeout=60, verify=False, allow_redirects=True)
+            resp.raise_for_status()
+            final_url = resp.url
+            if final_url != pdf_url:
+                print(f"  重定向到: {final_url}")
+        except Exception as e:
+            print(f"  PDF 下载失败: {e}")
+            return None
+
+        # 写入临时文件
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+        try:
+            with os.fdopen(tmp_fd, 'wb') as f:
+                f.write(resp.content)
+            markdown = pymupdf4llm.to_markdown(tmp_path)
+            print(f"  PDF 转换完成，共 {len(markdown)} 字符")
+            return markdown
+        except Exception as e:
+            print(f"  PDF 转换失败: {e}")
+            return None
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def check_and_crawl(self, url: str, desc: str, list_selector: str = None,
+                        content_selector: str = None,
+                        pdf_selector: str = None,
+                        list_date_selector: str = None,
+                        target_date=None):
+        """
+        检查 URL 并爬取今天更新的内容（生成器，每爬完一个即 yield）
+
         Args:
             url: 列表页 URL
             desc: 描述
             list_selector: CSS 选择器，用于定位列表区域
             content_selector: CSS 选择器，用于定位详情页正文区域
-        
-        Returns:
-            (标题, Markdown内容, 原始URL) 的列表
+            pdf_selector: CSS 选择器，用于定位详情页中的 PDF 链接
+            list_date_selector: CSS 选择器，用于定位列表项中的日期元素
+            target_date: 目标日期（date 对象），不传则使用今天
+
+        Yields:
+            (标题, Markdown内容, 原始URL) 元组
         """
         print(f"正在检查: {desc} - {url}")
         if list_selector:
             print(f"  列表选择器: {list_selector}")
+        if list_date_selector:
+            print(f"  日期选择器: {list_date_selector}")
         if content_selector:
             print(f"  内容选择器: {content_selector}")
-        
+        if pdf_selector:
+            print(f"  PDF 选择器: {pdf_selector}")
+
+        if target_date:
+            print(f"  目标日期: {target_date}")
+
         # 爬取列表页
         list_html = self.crawl_page(url)
         if not list_html:
             print(f"无法获取列表页: {url}")
-            return []
-        
+            return
+
         # 提取今天的链接
-        links = self.extract_links_from_list(list_html, list_selector)
+        links = self.extract_links_from_list(list_html, list_selector, list_date_selector, target_date)
         if not links:
             print(f"未找到今天的更新: {url}")
-            return []
-        
+            return
+
         print(f"找到 {len(links)} 个今天的更新")
-        
-        # 爬取每个链接的内容
-        results = []
+
         for link_url, link_text in links:
-            time.sleep(5) ## sleep 5 seconds
+            time.sleep(5)  # sleep 5 seconds
             # 处理相对路径
             if link_url.startswith('/'):
-                from urllib.parse import urljoin
                 link_url = urljoin(url, link_url)
-            
+
             print(f"正在爬取: {link_text} - {link_url}")
-            
+
             # 爬取详情页
             detail_html = self.crawl_page(link_url)
             if not detail_html:
                 print(f"无法获取详情页: {link_url}")
                 continue
-            
-            # 提取标题
-            title = self.extract_title(detail_html)
-            
-            # 转换为 Markdown（使用 content_selector 提取正文）
-            markdown = self.convert_to_markdown(detail_html, content_selector)
-            
-            results.append((title, markdown, link_url))
-        
-        return results
+
+            markdown = None
+
+            # 若配置了 pdf_selector，尝试提取 PDF 链接并转换
+            if pdf_selector:
+                soup = BeautifulSoup(detail_html, 'html.parser')
+                pdf_el = soup.select_one(pdf_selector)
+                if pdf_el and pdf_el.get('href'):
+                    pdf_href = pdf_el['href']
+                    pdf_url_full = pdf_href if pdf_href.startswith('http') else urljoin(link_url, pdf_href)
+                    print(f"  检测到 PDF 链接: {pdf_url_full}")
+                    markdown = self.download_and_convert_pdf(pdf_url_full)
+                    if markdown:
+                        print(f"  使用 PDF 内容")
+                    else:
+                        print(f"  PDF 处理失败，回退到 HTML 内容")
+
+            # 无 PDF 或 PDF 处理失败时，转换 HTML
+            if markdown is None:
+                markdown = self.convert_to_markdown(detail_html, content_selector)
+
+            yield link_text, markdown, link_url

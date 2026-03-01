@@ -2,11 +2,16 @@
     {
         "url": "https://www.bis.gov/news-updates",
         "desc": "美国商务部网站1",
+        "file_dir": "bis1",
         "list_selector": "#main-content ul",
-        "content_selector": "#main-content div.press-release-container"
+        "list_date_selector": "span.date",
+        "pdf_selector": "div.press-release-container a.hyperlink",
+        "content_selector": "#main-content div.press-release-container",
+        "init_today": "2025-11-04"
     },
     {
-        "url": "https://www.bis.gov/news-updates",
-        "desc": "美国商务部网站2"
+        "url": "https://www.bis.gov/news-updates11",
+        "desc": "美国商务部网站2",
+        "file_dir": "bis2"
     }
 ]

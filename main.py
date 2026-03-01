@@ -13,12 +13,17 @@ from src.api import create_app
 
 # 全局变量
 scheduler_service = None
+_first_run = True
 
 
 def crawl_task():
     """爬取任务"""
+    global _first_run
+
     print(f"\n{'='*60}")
     print(f"开始执行爬取任务 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if _first_run:
+        print("（首次运行）")
     print(f"{'='*60}\n")
     
     try:
@@ -35,24 +40,38 @@ def crawl_task():
         for item in urls:
             url = item['url']
             desc = item['desc']
+            file_dir = item.get('file_dir', '')
             list_selector = item.get('list_selector')
+            list_date_selector = item.get('list_date_selector')
             content_selector = item.get('content_selector')
-            
-            # 爬取内容
-            results = crawler.check_and_crawl(url, desc, list_selector, content_selector)
-            
-            # 保存结果
-            for title, markdown, original_url in results:
-                file_path = storage.save_markdown(markdown, title)
+            pdf_selector = item.get('pdf_selector')
+
+            # 首次运行时使用 init_today，否则用当天（None）
+            target_date = None
+            if _first_run:
+                init_today_str = item.get('init_today')
+                if init_today_str:
+                    try:
+                        target_date = datetime.strptime(init_today_str, '%Y-%m-%d').date()
+                        print(f"  [{desc}] 使用初始日期: {target_date}")
+                    except ValueError:
+                        print(f"  [{desc}] init_today 格式错误（应为 YYYY-MM-DD），使用今天")
+
+            # 爬取并即时保存（生成器：每爬完一篇立即保存）
+            for title, markdown, original_url in crawler.check_and_crawl(url, desc, list_selector, content_selector, pdf_selector, list_date_selector, target_date):
+                file_path = storage.save_markdown(markdown, title, file_dir=file_dir)
                 print(f"已保存: {file_path}")
                 total_saved += 1
         
         print(f"\n任务完成，共保存 {total_saved} 个文件\n")
-        
+
     except Exception as e:
         print(f"爬取任务执行失败: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        # 首次运行结束后，后续均使用当天日期
+        _first_run = False
 
 
 def signal_handler(sig, frame):
@@ -92,7 +111,7 @@ def main():
     print("\n按 Ctrl+C 停止服务\n")
     
     # 运行 Flask（这会阻塞主线程）
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
 
 
 if __name__ == "__main__":
