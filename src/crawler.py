@@ -1,4 +1,5 @@
 """爬虫服务模块"""
+import json
 import re
 import tempfile
 import os
@@ -23,6 +24,76 @@ class CrawlerService:
         self.html_converter.ignore_links = False
         self.html_converter.ignore_images = False
         self.html_converter.body_width = 0  # 不自动换行
+
+        self.proxy_auth_key = os.getenv("CRAWLER_PROXY_AUTH_KEY", "520PGXI4").strip()
+        self.proxy_password = os.getenv("CRAWLER_PROXY_PASSWORD", "10007E6BFDE183B").strip()
+        self.proxy_fetch_url = f"https://share.proxy.qg.net/get?key={self.proxy_auth_key}&num=1"
+
+    def _extract_proxy_addr(self, raw_text: str) -> Optional[str]:
+        """从接口返回文本中提取 host:port 或协议代理地址"""
+        if not raw_text:
+            return None
+
+        # 优先解析 JSON 响应，提取 data[0].server
+        try:
+            payload = json.loads(raw_text)
+            if isinstance(payload, dict):
+                data = payload.get("data")
+                if isinstance(data, list) and data:
+                    first_item = data[0]
+                    if isinstance(first_item, dict):
+                        server = str(first_item.get("server", "")).strip()
+                        if server:
+                            return server
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+        # 常见返回：纯文本 "ip:port" 或多行内容，取第一个代理格式片段
+        match = re.search(r'((?:https?|socks5)://[^\s]+|\d{1,3}(?:\.\d{1,3}){3}:\d{2,5})', raw_text)
+        if not match:
+            return None
+        return match.group(1).strip()
+
+    def _fetch_proxy_addr(self) -> Optional[str]:
+        """每次调用实时获取代理地址"""
+        if not self.proxy_fetch_url:
+            return None
+        try:
+            resp = requests.get(self.proxy_fetch_url, timeout=10, verify=False)
+            resp.raise_for_status()
+            addr = self._extract_proxy_addr(resp.text)
+            if not addr:
+                print(f"代理接口返回无法解析: {resp.text[:120]}")
+                return None
+            return addr
+        except Exception as e:
+            print(f"获取动态代理失败: {e}")
+            return None
+
+    def _build_proxy_settings(self) -> Optional[dict]:
+        """
+        构建代理配置（支持动态提取和固定配置）
+
+        支持：
+            - CRAWLER_PROXY_FETCH_URL=动态代理提取接口（每次 crawl_page 调用都请求）
+            - CRAWLER_PROXY_ADDR=host:port
+            - CRAWLER_PROXY_AUTH_KEY=用户名
+            - CRAWLER_PROXY_PASSWORD=密码
+        """
+        proxy_addr = self._fetch_proxy_addr()
+        if not proxy_addr:
+            return None
+
+        # Playwright proxy server 需要协议前缀
+        server = proxy_addr if "://" in proxy_addr else f"http://{proxy_addr}"
+        proxy: dict = {"server": server}
+        if self.proxy_auth_key:
+            proxy["username"] = self.proxy_auth_key
+        if self.proxy_password:
+            proxy["password"] = self.proxy_password
+
+        print(f"已启用代理: {server}")
+        return proxy
     
     def is_today(self, date_text: str, target_date=None) -> bool:
         """
@@ -148,7 +219,11 @@ class CrawlerService:
         target_url = str(url)
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                launch_options = {"headless": True}
+                proxy_settings = self._build_proxy_settings()
+                if proxy_settings:
+                    launch_options["proxy"] = proxy_settings
+                browser = p.chromium.launch(**launch_options)
                 context = browser.new_context()
                 context.set_default_navigation_timeout(timeout)
                 context.set_default_timeout(timeout)
