@@ -207,36 +207,91 @@ class CrawlerService:
     
     def crawl_page(self, url, timeout=30000):
         """
-        使用 Playwright 爬取页面内容
-        
+        使用 Playwright + stealth 爬取页面内容（带反检测）
+
         Args:
             url: 目标 URL
             timeout: 超时时间（毫秒）
-        
+
         Returns:
             页面 HTML 内容，失败返回 None
         """
+        import random
+        from playwright_stealth import Stealth
+
         target_url = str(url)
         try:
             with sync_playwright() as p:
-                launch_options = {"headless": True}
+                launch_options = {
+                    "headless": True,
+                    "args": [
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-infobars",
+                        "--window-size=1920,1080",
+                    ],
+                }
                 proxy_settings = self._build_proxy_settings()
                 if proxy_settings:
                     launch_options["proxy"] = proxy_settings
+
                 browser = p.chromium.launch(**launch_options)
-                context = browser.new_context()
+
+                context = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1920, "height": 1080},
+                    locale="en-US",
+                    timezone_id="America/New_York",
+                    extra_http_headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Accept-Encoding": "gzip, deflate, br",
+                        "Sec-CH-UA": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                        "Sec-CH-UA-Mobile": "?0",
+                        "Sec-CH-UA-Platform": '"Windows"',
+                        "Sec-Fetch-Dest": "document",
+                        "Sec-Fetch-Mode": "navigate",
+                        "Sec-Fetch-Site": "none",
+                        "Sec-Fetch-User": "?1",
+                        "Upgrade-Insecure-Requests": "1",
+                    },
+                )
                 context.set_default_navigation_timeout(timeout)
                 context.set_default_timeout(timeout)
+
                 page = context.new_page()
-                page.goto(target_url)
-                
-                # 等待页面加载
+
+                # 应用 playwright-stealth：自动隐藏 webdriver、伪造
+                # navigator.plugins/languages/chrome/permissions 等指纹
+                Stealth().apply_stealth_sync(page)
+
+                page.goto(target_url, wait_until="domcontentloaded")
                 page.wait_for_load_state('networkidle')
-                
-                # 获取页面内容
+
+                # 检测 Cloudflare 挑战页面并等待
+                for _ in range(3):
+                    title = page.title().lower()
+                    body_text = page.inner_text("body")[:500].lower()
+                    if ("just a moment" in title
+                            or "checking your browser" in body_text
+                            or "cf-challenge" in page.content()[:2000].lower()):
+                        print(f"  检测到 Cloudflare 挑战，等待通过...")
+                        page.wait_for_timeout(random.randint(5000, 8000))
+                        page.wait_for_load_state('networkidle')
+                    else:
+                        break
+
+                # 模拟人类行为：随机短暂等待
+                page.wait_for_timeout(random.randint(500, 1500))
+
                 content = page.content()
                 browser.close()
-                
+
                 return content
         except PlaywrightTimeoutError:
             print(f"页面加载超时: {url}")
